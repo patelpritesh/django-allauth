@@ -54,13 +54,14 @@ class AppleOAuth2Adapter(OAuth2Adapter):
         public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(apple_public_key))
         return public_key
 
-    def get_client_id(self, provider):
-        app = get_adapter().get_app(request=None, provider=self.provider_id)
+    def get_client_id(self, provider, app):
+        if not app:
+            app = get_adapter().get_app(request=None, provider=self.provider_id)
         return [aud.strip() for aud in app.client_id.split(",")]
 
-    def get_verified_identity_data(self, id_token):
+    def get_verified_identity_data(self, id_token, app):
         provider = self.get_provider()
-        allowed_auds = self.get_client_id(provider)
+        allowed_auds = self.get_client_id(provider, app)
 
         try:
             public_key = self.get_public_key(id_token)
@@ -75,9 +76,9 @@ class AppleOAuth2Adapter(OAuth2Adapter):
             return identity_data
 
         except jwt.PyJWTError as e:
-            raise OAuth2Error("Invalid id_token") from e
+            raise OAuth2Error("Invalid id_token")
 
-    def parse_token(self, data):
+    def parse_token(self, data, app):
         token = SocialToken(
             token=data["access_token"],
         )
@@ -89,7 +90,7 @@ class AppleOAuth2Adapter(OAuth2Adapter):
 
         # `user_data` is a big flat dictionary with the parsed JWT claims
         # access_tokens, and user info from the apple post.
-        identity_data = self.get_verified_identity_data(data["id_token"])
+        identity_data = self.get_verified_identity_data(data["id_token"], app)
         token.user_data = {**data, **identity_data}
 
         return token
@@ -118,18 +119,18 @@ class AppleOAuth2Adapter(OAuth2Adapter):
             return {}
 
     def get_access_token_data(self, request, app, client):
-        """We need to gather the info from the apple specific login"""
+        """ We need to gather the info from the apple specific login """
         add_apple_session(request)
 
         # Exchange `code`
         code = get_request_param(request, "code")
         access_token_data = client.get_access_token(code)
-
-        return {
-            **access_token_data,
-            **self.get_user_scope_data(request),
+        return_data = access_token_data
+        return_data.update(self.get_user_scope_data(request))
+        return_data.update({
             "id_token": request.apple_login_session.get("id_token"),
-        }
+        })
+        return return_data
 
 
 @csrf_exempt
@@ -149,7 +150,7 @@ def apple_post_callback(request, finish_endpoint_name="apple_finish_callback"):
             callback endpoint.
     """
     if request.method != "POST":
-        raise HttpResponseNotAllowed(["POST"])
+        raise HttpResponseNotAllowed()
     add_apple_session(request)
 
     # Add regular OAuth2 params to the URL - reduces the overrides required
